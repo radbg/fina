@@ -173,11 +173,11 @@ let currentProject=null; // {id, name, icon, shared, ownerId, categories:[...]}
 let spaceProjects=[];    // all projects in space
 let currentMonth=getMonthKey(new Date()),currentView='dashboard';
 let monthData={limits:{},transactions:[],income:[]};
-let tasaBCV=null,selectedCat=null,expenseCurrency='usd',incomeCurrency='usd';
+let tasaBCV=null,tasaEUR=null,selectedCat=null,expenseCurrency='usd',incomeCurrency='usd';
 let deleteConfirmId=null,converterDir='usd-to-ves';
 let userDisplayCurrency=null; // moneda preferida de visualización por usuario
-let splitMode=false,splitWith={}; // para dividir gastos entre miembros
-let unsubMonth=null,unsubSpace=null,unsubTasa=null,unsubProjects=null;
+let splitMode=false,splitWith={},splitType='equal',splitCustom={}; // para dividir gastos entre miembros
+let unsubMonth=null,unsubSpace=null,unsubTasa=null,unsubTasaEUR=null,unsubProjects=null;
 let appScreen='loading'; // loading|auth|register|spaces|projects|main
 
 // ═══ HELPERS ═══
@@ -211,9 +211,10 @@ function leaveToSpaces(){detachAll();currentSpace=null;currentProject=null;space
 async function leaveSpace(sid){if(!confirm('¿Salir de este espacio?'))return;try{const ref=db.collection('spaces').doc(sid),snap=await ref.get(),data=snap.data();const nu=data.memberUids.filter(u=>u!==user.uid),nm=data.members.filter(m=>m.uid!==user.uid);if(!nu.length)await ref.delete();else await ref.update({members:nm,memberUids:nu});if(currentSpace?.id===sid){detachAll();currentSpace=null;currentProject=null}await loadUserSpaces()}catch(e){showToast(e.message,'var(--red)')}}
 
 // ═══ PROJECTS ═══
-function attachSpaceListeners(){if(unsubSpace)unsubSpace();if(unsubProjects)unsubProjects();if(unsubTasa)unsubTasa();
+function attachSpaceListeners(){if(unsubSpace)unsubSpace();if(unsubProjects)unsubProjects();if(unsubTasa)unsubTasa();if(unsubTasaEUR)unsubTasaEUR();
   unsubSpace=db.collection('spaces').doc(currentSpace.id).onSnapshot(s=>{if(s.exists)currentSpace={id:s.id,...s.data()}});
   unsubTasa=db.collection('spaces').doc(currentSpace.id).collection('config').doc('tasa').onSnapshot(s=>{tasaBCV=s.exists?s.data().value:null;if(appScreen==='main')renderMainContent()});
+  unsubTasaEUR=db.collection('spaces').doc(currentSpace.id).collection('config').doc('tasaEUR').onSnapshot(s=>{const prev=tasaEUR;tasaEUR=s.exists?s.data().value:null;if(!s.exists)fetchEURBCVAuto(true);if(prev!==tasaEUR&&appScreen==='main')renderMainContent()});
   unsubProjects=db.collection('spaces').doc(currentSpace.id).collection('projects').onSnapshot(snap=>{
     spaceProjects=snap.docs.map(d=>({id:d.id,...d.data()})).filter(p=>p.shared||p.ownerId===user.uid);
     if(currentProject){const updated=spaceProjects.find(p=>p.id===currentProject.id);if(updated)currentProject=updated}
@@ -315,6 +316,26 @@ async function fetchBCVAuto(){
   }
 }
 
+async function fetchEURBCVAuto(silent=false){
+  const btn=document.getElementById('eurAutoBtn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Conectando...'}
+  try{
+    const r=await fetch('https://bcvapi.tech/api/v1/euro/public');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const data=await r.json();
+    const tasa=data.tasa;
+    if(!tasa||isNaN(tasa))throw new Error('respuesta inválida');
+    if(currentSpace)await db.collection('spaces').doc(currentSpace.id).collection('config').doc('tasaEUR').set({value:parseFloat(tasa.toFixed(2))});
+    if(!silent)showToast(`✓ Tasa EUR: Bs. ${tasa.toFixed(2)}`,'var(--green)');
+    if(btn){btn.disabled=false;btn.textContent='✓ Actualizado'}
+  }catch(e){
+    if(!silent)showToast('No se pudo obtener tasa EUR','var(--red)');
+    if(btn){btn.disabled=false;btn.textContent='🔄 Reintentar'}
+  }
+}
+async function saveEURTasa(){const v=document.getElementById('eurTasaInput')?.value;if(!v||isNaN(parseFloat(v)))return;try{await db.collection('spaces').doc(currentSpace.id).collection('config').doc('tasaEUR').set({value:parseFloat(v)});showToast('Tasa EUR actualizada','var(--green)')}catch(e){showToast(e.message,'var(--red)')}}
+async function removeEURTasa(){try{await db.collection('spaces').doc(currentSpace.id).collection('config').doc('tasaEUR').delete();tasaEUR=null;showToast('Tasa EUR desactivada','var(--blue)')}catch(e){showToast(e.message,'var(--red)')}}
+
 // ═══ MONEDA DE VISUALIZACIÓN ═══
 function loadDisplayCurrency(){userDisplayCurrency=localStorage.getItem('fina_disp_'+(currentProject?.id||''))||projCurrency()}
 function setDisplayCurrency(cur){
@@ -330,21 +351,36 @@ function dispCurToggleHTML(){
 }
 
 // ═══ SPLITTING DE GASTOS ═══
-function toggleSplitMode(){splitMode=!splitMode;if(!splitMode)splitWith={};renderMainContent()}
-function toggleSplitMember(uid){if(splitWith[uid])delete splitWith[uid];else splitWith[uid]=true;renderMainContent()}
+function toggleSplitMode(){splitMode=!splitMode;if(!splitMode){splitWith={};splitType='equal';splitCustom={};}const el=document.getElementById('splitSection');if(el)el.outerHTML=splitSectionHTML();else renderMainContent()}
+function toggleSplitMember(uid){if(splitWith[uid]){delete splitWith[uid];delete splitCustom[uid];}else splitWith[uid]=true;const el=document.getElementById('splitSection');if(el)el.outerHTML=splitSectionHTML();else renderMainContent()}
+function setSplitType(type){splitType=type;const el=document.getElementById('splitSection');if(el)el.outerHTML=splitSectionHTML();else renderMainContent()}
+function setSplitCustom(uid,val){splitCustom[uid]=parseFloat(val)||0}
 function splitSectionHTML(){
   const members=(currentSpace?.members||[]).filter(m=>m.uid!==user.uid);
   const noMembers=!members.length;
-  return`<div style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:13px;font-weight:600;color:var(--text2)">💸 Dividir gasto</span><button class="btn btn-sm" style="background:${splitMode?'var(--purple)':'rgba(255,255,255,0.08)'}" onclick="toggleSplitMode()">${splitMode?'Activado ✓':'Dividir'}</button></div>${splitMode?(noMembers?`<div style="font-size:12px;color:var(--muted);background:rgba(255,255,255,0.04);border-radius:10px;padding:10px">👥 Invita miembros al espacio para dividir gastos entre ellos.</div>`:`<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Partes iguales con:</div>${members.map(m=>`<div class="split-member ${splitWith[m.uid]?'sel':''}" onclick="toggleSplitMember('${m.uid}')"><span>${splitWith[m.uid]?'☑':'☐'}</span><span style="font-size:14px;color:var(--text2)">${m.name}</span></div>`).join('')}`):''}</div>`
+  const modeBtn=(id,lbl)=>`<button class="btn btn-xs" style="background:${splitType===id?'var(--purple)':'rgba(255,255,255,0.08)'};padding:4px 10px;font-size:12px" onclick="setSplitType('${id}')">${lbl}</button>`;
+  let memberRows='';
+  if(splitMode&&!noMembers){
+    memberRows=members.map(m=>{
+      const sel=!!splitWith[m.uid];
+      const inputHtml=sel&&splitType!=='equal'?`<input type="number" inputmode="decimal" style="width:70px;padding:4px 8px;font-size:13px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:var(--text2);outline:none;margin-left:auto" placeholder="${splitType==='pct'?'%':'0.00'}" value="${splitCustom[m.uid]||''}" onclick="event.stopPropagation()" oninput="setSplitCustom('${m.uid}',this.value)">`:'';
+      return`<div class="split-member ${sel?'sel':''}" onclick="toggleSplitMember('${m.uid}')"><span>${sel?'☑':'☐'}</span><span style="font-size:14px;color:var(--text2);flex:1">${m.name}</span>${inputHtml}</div>`;
+    }).join('');
+  }
+  return`<div id="splitSection" style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:13px;font-weight:600;color:var(--text2)">💸 Dividir gasto</span><button class="btn btn-sm" style="background:${splitMode?'var(--purple)':'rgba(255,255,255,0.08)'}" onclick="toggleSplitMode()">${splitMode?'Activado ✓':'Dividir'}</button></div>${splitMode?(noMembers?`<div style="font-size:12px;color:var(--muted);background:rgba(255,255,255,0.04);border-radius:10px;padding:10px">👥 Invita miembros al espacio para dividir gastos entre ellos.</div>`:`<div style="display:flex;gap:6px;margin-bottom:10px">${modeBtn('equal','⚖️ Igual')}${modeBtn('pct','% Porcentaje')}${modeBtn('amount','$ Monto')}</div>${memberRows}`):''}</div>`
 }
 
 // ═══ BALANCES ═══
 function computeOwes(){
   const owes={};
   monthData.transactions.filter(t=>t.splitWith?.length&&t.paidBy).forEach(tx=>{
-    const all=[tx.paidBy,...tx.splitWith].filter((v,i,a)=>a.indexOf(v)===i);
-    const share=tx.amount/all.length;
-    all.filter(uid=>uid!==tx.paidBy).forEach(debtor=>{
+    const swUids=tx.splitWith.map(s=>typeof s==='object'?s.uid:s);
+    const all=[tx.paidBy,...swUids].filter((v,i,a)=>a.indexOf(v)===i);
+    swUids.filter(uid=>uid!==tx.paidBy).forEach(debtor=>{
+      let share;
+      if(tx.splitType==='amount'&&tx.splitDetails?.[debtor]!==undefined){share=tx.splitDetails[debtor];}
+      else if(tx.splitType==='pct'&&tx.splitDetails?.[debtor]!==undefined){share=tx.amount*(tx.splitDetails[debtor]/100);}
+      else{share=tx.amount/all.length;}
       if(!owes[debtor])owes[debtor]={};
       if(!owes[debtor][tx.paidBy])owes[debtor][tx.paidBy]=0;
       owes[debtor][tx.paidBy]+=share;
@@ -421,23 +457,58 @@ function updateTransferFields(){
   const type=document.getElementById('trfType')?.value||'';
   const el=document.getElementById('trfDynamic');
   if(el)el.innerHTML=transferFieldsHTML(type);
+  const lbl=document.getElementById('trfAmtCurLabel');
+  if(lbl){if(type==='ve'||type==='pagomovil')lbl.textContent='(Bs.)';else if(type==='usdt')lbl.textContent='(USDT)';else lbl.textContent='(USD)';}
+  const dir=document.getElementById('trfDir')?.value||'sent';
+  const toLbl=document.getElementById('trfToLabel');
+  if(toLbl)toLbl.textContent=dir==='sent'?'Enviado a':'Recibido de';
+}
+function trfDirOptionsHTML(dir){
+  const cats=currentProject?.categories||[];
+  const catOpts=cats.map(c=>`<option value="${c.id}">${c.icon} ${c.name}</option>`).join('');
+  const owes=computeOwes();const members=currentSpace?.members||[];
+  const myDebtOpts=Object.entries(owes[user?.uid]||{}).filter(([,a])=>a>0.01).map(([cid,a])=>{const nm=members.find(m=>m.uid===cid)?.name||cid;return`<option value="${cid}">Deuda con ${nm} — ${fmtMoney(a)}</option>`;}).join('');
+  if(dir==='received'){return`<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text);margin-bottom:12px"><input type="checkbox" id="trfAsIncome" style="width:18px;height:18px;accent-color:var(--green)"> 💵 Registrar también como ingreso</label>`;}
+  return`<div style="margin-bottom:12px"><label class="label-sm">Acción adicional</label><select id="trfAction" class="input" onchange="updateTrfAction()"><option value="none">Solo registrar transferencia</option>${cats.length?'<option value="expense">Registrar también como gasto</option>':''}${myDebtOpts?'<option value="settle">Saldar una deuda</option>':''}</select></div><div id="trfActionDetail"></div>`;
+}
+function setTrfDir(dir){
+  const h=document.getElementById('trfDir');if(h)h.value=dir;
+  const s=document.getElementById('btnDirSent'),r=document.getElementById('btnDirRecv');
+  if(s)s.style.background=dir==='sent'?'var(--blue)':'rgba(255,255,255,.08)';
+  if(r)r.style.background=dir==='received'?'var(--green)':'rgba(255,255,255,.08)';
+  const el=document.getElementById('trfDirOptions');if(el)el.innerHTML=trfDirOptionsHTML(dir);
+  const toLbl=document.getElementById('trfToLabel');if(toLbl)toLbl.textContent=dir==='sent'?'Enviado a':'Recibido de';
+}
+function updateTrfAction(){
+  const action=document.getElementById('trfAction')?.value||'none';
+  const el=document.getElementById('trfActionDetail');if(!el)return;
+  const cats=currentProject?.categories||[];
+  const catOpts=cats.map(c=>`<option value="${c.id}">${c.icon} ${c.name}</option>`).join('');
+  const owes=computeOwes();const members=currentSpace?.members||[];
+  const debtOpts=Object.entries(owes[user?.uid]||{}).filter(([,a])=>a>0.01).map(([cid,a])=>{const nm=members.find(m=>m.uid===cid)?.name||cid;return`<option value="${cid}">Deuda con ${nm} — ${fmtMoney(a)}</option>`;}).join('');
+  if(action==='expense')el.innerHTML=`<div style="margin-bottom:12px"><label class="label-sm">Categoría</label><select id="trfExpCat" class="input">${catOpts}</select></div>`;
+  else if(action==='settle')el.innerHTML=`<div style="margin-bottom:12px"><label class="label-sm">Deuda a saldar</label><select id="trfDebtCred" class="input">${debtOpts}</select></div>`;
+  else el.innerHTML='';
 }
 function renderTransfers(){
-  const allTrf=[...(monthData.transfers||[]),...(monthData.usdt||[]).map(u=>({...u,type:'usdt',typeLabel:'USDT'}))].sort((a,b)=>b.id-a.id);
+  const allTrf=[...(monthData.transfers||[]),...(monthData.usdt||[]).map(u=>({...u,type:'usdt',typeLabel:'USDT',direction:'sent'}))].sort((a,b)=>b.id-a.id);
   const members=(currentSpace?.members||[]).filter(m=>m.uid!==user.uid);
   const memberOpts=members.map(m=>`<option value="${m.uid}">${m.name}</option>`).join('');
-  const toField=members.length?`<div style="margin-bottom:10px"><label class="label-sm">Enviado a</label><select id="trfTo" class="input"><option value="">Selecciona persona...</option>${memberOpts}</select></div>`:`<div style="margin-bottom:10px"><label class="label-sm">Enviado a (nombre, email o wallet)</label><input type="text" id="trfToText" class="input" placeholder="Nombre, email o dirección..."></div>`;
+  const toField=members.length?`<div style="margin-bottom:10px"><label class="label-sm"><span id="trfToLabel">Enviado a</span></label><select id="trfTo" class="input"><option value="">Selecciona persona...</option>${memberOpts}</select></div>`:`<div style="margin-bottom:10px"><label class="label-sm"><span id="trfToLabel">Enviado a</span> <span style="font-size:11px;color:var(--dim)">(nombre, email o wallet)</span></label><input type="text" id="trfToText" class="input" placeholder="Nombre, email o dirección..."></div>`;
   const typeIcons={pagomovil:'📱',ve:'🇻🇪',usa:'🇺🇸',zelle:'💸',usdt:'₮'};
   const typeLabels={pagomovil:'Pago Móvil',ve:'Transf. Venezuela',usa:'Transf. EE.UU.',zelle:'Zelle',usdt:'USDT'};
+  const today=new Date().toISOString().split('T')[0];
   const list=allTrf.length?allTrf.map(p=>{
-    const isNew=!!(monthData.transfers||[]).find(t=>t.id===p.id);
     const delKey='trf_'+p.id;
     const del=deleteConfirmId===delKey?`<div style="display:flex;gap:4px"><button class="btn btn-xs" style="background:var(--red)" onclick="deleteTransfer(${p.id})">Sí</button><button class="btn btn-xs" style="background:rgba(255,255,255,.1)" onclick="cancelDelete()">No</button></div>`:`<button style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:4px" onclick="deleteConfirmId='trf_'+${p.id};renderMainContent()">🗑</button>`;
     const typeIcon=typeIcons[p.type]||'💸';const typeLbl=typeLabels[p.type]||p.type||'';
-    const extra=[p.bank?`🏦 ${p.bank}`:'',p.ref?`#${p.ref}`:'',p.phone?`📞 ${p.phone}`:'',p.zelleId?`📧 ${p.zelleId}`:'',p.usdtNet||p.note?.includes('(')?'':'',p.txHash?`Hash: ${p.txHash.length>20?p.txHash.slice(0,16)+'…':p.txHash}`:''].filter(Boolean).join(' · ');
-    return`<div class="usdt-row"><div style="flex:1"><div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span>${typeIcon}</span><span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px">${typeLbl}</span><span style="font-size:15px;font-weight:700;color:var(--green);margin-left:auto">$${p.amount}</span></div><div style="font-size:12px;color:var(--muted)">${p.fromName||'?'} → ${p.toName||'?'}</div>${extra?`<div style="font-size:11px;color:var(--dim);margin-top:2px">${extra}</div>`:''}${p.note?`<div style="font-size:11px;color:var(--muted)">${p.note}</div>`:''}<div style="font-size:11px;color:var(--dim)">${new Date(p.date).toLocaleDateString('es')}</div></div>${del}</div>`
+    const dirIcon=p.direction==='received'?'📥':'📤';
+    const amtDisplay=p.currency==='ves'?`Bs. ${p.amount}`:p.currency==='usdt'?`₮ ${p.amount} USDT`:`$${p.amount}`;
+    const amtColor=p.direction==='received'?'var(--green)':'var(--orange)';
+    const extra=[p.bank?`🏦 ${p.bank}`:'',p.ref?`#${p.ref}`:'',p.phone?`📞 ${p.phone}`:'',p.zelleId?`📧 ${p.zelleId}`:'',p.usdtNet?`🔗 ${p.usdtNet}`:'',p.txHash?`Hash: ${p.txHash.length>20?p.txHash.slice(0,16)+'…':p.txHash}`:''].filter(Boolean).join(' · ');
+    return`<div class="usdt-row"><div style="flex:1"><div style="display:flex;align-items:center;gap:5px;margin-bottom:3px"><span>${dirIcon}</span><span>${typeIcon}</span><span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px">${typeLbl}</span><span style="font-size:15px;font-weight:700;color:${amtColor};margin-left:auto">${amtDisplay}</span></div><div style="font-size:12px;color:var(--muted)">${p.fromName||'?'} → ${p.toName||'?'}</div>${extra?`<div style="font-size:11px;color:var(--dim);margin-top:2px">${extra}</div>`:''}${p.note?`<div style="font-size:11px;color:var(--muted)">${p.note}</div>`:''}<div style="font-size:11px;color:var(--dim)">${new Date(p.date).toLocaleDateString('es')}</div></div>${del}</div>`
   }).join(''):`<div style="text-align:center;color:var(--dim);padding:30px;font-size:14px">Sin transferencias este mes</div>`;
-  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">🔄 Transferencias</h3><div class="card" style="margin:0 0 16px 0"><h4 style="font-size:13px;color:var(--text2);margin-bottom:12px">Registrar transferencia</h4><div style="margin-bottom:10px"><label class="label-sm">Tipo de transferencia</label><select id="trfType" class="input" onchange="updateTransferFields()"><option value="">Selecciona tipo...</option><option value="pagomovil">📱 Pago Móvil</option><option value="ve">🇻🇪 Transferencia Venezuela</option><option value="usa">🇺🇸 Transferencia EE.UU.</option><option value="zelle">💸 Zelle</option><option value="usdt">₮ USDT</option></select></div><div id="trfDynamic"></div>${toField}<div style="margin-bottom:10px"><label class="label-sm">Monto (USD)</label><input type="text" inputmode="decimal" id="trfAmt" class="input" placeholder="0.00"></div><div style="margin-bottom:12px"><label class="label-sm">Nota (opcional)</label><input type="text" id="trfNote" class="input" placeholder="Pago de deuda, freelance, alquiler..."></div><button class="btn btn-full" style="background:var(--green)" onclick="addTransfer()">✓ Registrar Transferencia</button></div><h4 style="font-size:13px;color:var(--muted);margin-bottom:10px">Historial — ${mLabel()}</h4>${list}</div>`
+  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">🔄 Transferencias</h3><div class="card" style="margin:0 0 16px 0"><h4 style="font-size:13px;color:var(--text2);margin-bottom:12px">Registrar transferencia</h4><input type="hidden" id="trfDir" value="sent"><div style="margin-bottom:12px"><label class="label-sm">Dirección</label><div style="display:flex;gap:8px"><button id="btnDirSent" class="btn" style="flex:1;font-size:13px;padding:10px;background:var(--blue)" onclick="setTrfDir('sent')">📤 Enviada</button><button id="btnDirRecv" class="btn" style="flex:1;font-size:13px;padding:10px;background:rgba(255,255,255,.08)" onclick="setTrfDir('received')">📥 Recibida</button></div></div><div style="margin-bottom:10px"><label class="label-sm">Tipo de transferencia</label><select id="trfType" class="input" onchange="updateTransferFields()"><option value="">Selecciona tipo...</option><option value="pagomovil">📱 Pago Móvil</option><option value="ve">🇻🇪 Transferencia Venezuela</option><option value="usa">🇺🇸 Transferencia EE.UU.</option><option value="zelle">💸 Zelle</option><option value="usdt">₮ USDT</option></select></div><div id="trfDynamic"></div>${toField}<div style="margin-bottom:10px"><label class="label-sm">Monto <span id="trfAmtCurLabel" style="color:var(--blue);font-weight:600">(USD)</span></label><input type="text" inputmode="decimal" id="trfAmt" class="input" placeholder="0.00"></div><div style="margin-bottom:10px"><label class="label-sm">Fecha de la transferencia</label><input type="date" id="trfDate" class="input" value="${today}"></div><div style="margin-bottom:12px"><label class="label-sm">Nota (opcional)</label><input type="text" id="trfNote" class="input" placeholder="Pago de deuda, freelance, alquiler..."></div><div id="trfDirOptions">${trfDirOptionsHTML('sent')}</div><button class="btn btn-full" style="background:var(--green)" onclick="addTransfer()">✓ Registrar Transferencia</button></div><h4 style="font-size:13px;color:var(--muted);margin-bottom:10px">Historial — ${mLabel()}</h4>${list}</div>`
 }
 
 // ═══ USDT (legacy) ═══
@@ -477,12 +548,13 @@ async function addUSDTTransfer(){
 async function addTransfer(){
   const type=document.getElementById('trfType')?.value||'';
   if(!type)return showToast('Selecciona el tipo de transferencia');
+  const dir=document.getElementById('trfDir')?.value||'sent';
   const toUid=document.getElementById('trfTo')?.value||'';
   const toText=document.getElementById('trfToText')?.value?.trim()||'';
-  const toName=toUid?((currentSpace?.members||[]).find(m=>m.uid===toUid)?.name||toUid):toText;
-  if(!toUid&&!toText)return showToast('Indica el destinatario');
-  const amt=parseFloat(document.getElementById('trfAmt')?.value);
-  if(!amt||isNaN(amt)||amt<=0)return showToast('Monto inválido');
+  const partnerName=toUid?((currentSpace?.members||[]).find(m=>m.uid===toUid)?.name||toUid):toText;
+  if(!toUid&&!toText)return showToast(dir==='sent'?'Indica el destinatario':'Indica el emisor');
+  const rawAmt=parseFloat(document.getElementById('trfAmt')?.value);
+  if(!rawAmt||isNaN(rawAmt)||rawAmt<=0)return showToast('Monto inválido');
   const note=document.getElementById('trfNote')?.value?.trim()||'';
   const bank=document.getElementById('trfBank')?.value||'';
   const ref=document.getElementById('trfRef')?.value?.trim()||'';
@@ -490,18 +562,45 @@ async function addTransfer(){
   const zelleId=document.getElementById('trfZelleId')?.value?.trim()||'';
   const usdtNet=document.getElementById('trfUsdtNet')?.value||'';
   const txHash=document.getElementById('trfHash')?.value?.trim()||'';
+  const dateStr=document.getElementById('trfDate')?.value;
+  const date=dateStr?new Date(dateStr+'T12:00:00').toISOString():new Date().toISOString();
+  const isVes=type==='ve'||type==='pagomovil';const isUsdt=type==='usdt';
+  const currency=isVes?'ves':isUsdt?'usdt':'usd';
+  const amtUSD=isVes&&tasaBCV?rawAmt/tasaBCV:rawAmt;
   const typeLabels={pagomovil:'Pago Móvil',ve:'Transf. Venezuela',usa:'Transf. EE.UU.',zelle:'Zelle',usdt:'USDT'};
-  const transfer={id:Date.now(),type,typeLabel:typeLabels[type]||type,fromUid:user.uid,fromName:user.displayName||user.email,toUid,toName,amount:amt,bank,ref,phone,zelleId,usdtNet,txHash,note,date:new Date().toISOString()};
+  const fromUid=dir==='sent'?user.uid:toUid;
+  const fromName=dir==='sent'?(user.displayName||user.email):partnerName;
+  const toUidFinal=dir==='sent'?toUid:user.uid;
+  const toNameFinal=dir==='sent'?partnerName:(user.displayName||user.email);
+  const transfer={id:Date.now(),type,typeLabel:typeLabels[type]||type,direction:dir,fromUid,fromName,toUid:toUidFinal,toName:toNameFinal,amount:rawAmt,currency,bank,ref,phone,zelleId,usdtNet,txHash,note,date};
   if(!monthData.transfers)monthData.transfers=[];
   monthData.transfers.push(transfer);
+  if(dir==='received'){
+    if(document.getElementById('trfAsIncome')?.checked){
+      if(isVes&&!tasaBCV)showToast('Sin tasa BCV: ingreso no convertido a USD','var(--orange)');
+      else{const incNote=(typeLabels[type]||type)+(note?` · ${note}`:'');monthData.income.push({id:Date.now()+1,amount:amtUSD,originalAmount:rawAmt,originalCurrency:currency,tasaUsed:isVes?tasaBCV:null,note:incNote,date,addedBy:user.displayName||user.email});}
+    }
+  } else {
+    const action=document.getElementById('trfAction')?.value||'none';
+    if(action==='expense'){
+      const catId=document.getElementById('trfExpCat')?.value;
+      if(catId){
+        if(isVes&&!tasaBCV)showToast('Sin tasa BCV: gasto no convertido a USD','var(--orange)');
+        else{const expNote=(typeLabels[type]||type)+(note?` · ${note}`:'');monthData.transactions.push({id:Date.now()+1,category:catId,amount:amtUSD,originalAmount:rawAmt,originalCurrency:currency,tasaUsed:isVes?tasaBCV:null,note:expNote,date,addedBy:user.displayName||user.email,paidBy:user.uid,splitWith:[]});checkAlerts(catId,getSpent(catId),monthData.limits[catId]||0);}
+      }
+    } else if(action==='settle'){
+      const credUid=document.getElementById('trfDebtCred')?.value;
+      if(credUid){if(!monthData.settledDebts)monthData.settledDebts=[];monthData.settledDebts=monthData.settledDebts.filter(s=>!(s.debtor===user.uid&&s.creditor===credUid));monthData.settledDebts.push({debtor:user.uid,creditor:credUid,date,settledBy:user.uid});}
+    }
+  }
   await saveMonthData();
-  showToast(`✓ Transferencia registrada a ${toName}`,'var(--green)');
+  showToast(`✓ Transferencia ${dir==='sent'?'enviada':'recibida'} registrada`,'var(--green)');
   renderMainContent()
 }
 async function deleteUSDT(id){monthData.usdt=(monthData.usdt||[]).filter(p=>p.id!==id);deleteConfirmId=null;await saveMonthData();renderMainContent()}
 async function deleteTransfer(id){monthData.transfers=(monthData.transfers||[]).filter(p=>p.id!==id);deleteConfirmId=null;await saveMonthData();renderMainContent()}
 
-function detachAll(){[unsubMonth,unsubSpace,unsubTasa,unsubProjects].forEach(u=>{if(u)u()});unsubMonth=unsubSpace=unsubTasa=unsubProjects=null}
+function detachAll(){[unsubMonth,unsubSpace,unsubTasa,unsubTasaEUR,unsubProjects].forEach(u=>{if(u)u()});unsubMonth=unsubSpace=unsubTasa=unsubTasaEUR=unsubProjects=null}
 
 // ═══ ACTIONS ═══
 function navMonth(dir){const[y,m]=currentMonth.split('-').map(Number);currentMonth=getMonthKey(new Date(y,m-1+dir,1));subscribeToMonth()}
@@ -511,8 +610,8 @@ function selectCat(id){selectedCat=id;renderMainContent()}
 function setExpCurrency(c){if(c==='ves'&&!tasaBCV){showToast('Configura la tasa BCV primero');return}expenseCurrency=c;renderMainContent()}
 function setIncCurrency(c){if(c==='ves'&&!tasaBCV){showToast('Configura la tasa BCV primero');return}incomeCurrency=c;renderMainContent()}
 
-async function addTransaction(){const inp=document.getElementById('expenseAmount'),note=document.getElementById('expenseNote');if(!selectedCat||!inp?.value)return;const raw=parseFloat(inp.value);if(isNaN(raw))return;const isV=expenseCurrency==='ves';if(isV&&!tasaBCV)return;const amt=isV?raw/tasaBCV:raw;const sw=splitMode?Object.keys(splitWith):[];monthData.transactions.push({id:Date.now(),category:selectedCat,amount:amt,originalAmount:raw,originalCurrency:expenseCurrency,tasaUsed:isV?tasaBCV:null,note:note?.value||'',date:new Date().toISOString(),addedBy:user.displayName||user.email,paidBy:user.uid,splitWith:sw});checkAlerts(selectedCat,getSpent(selectedCat),monthData.limits[selectedCat]||0);await saveMonthData();selectedCat=null;expenseCurrency='usd';splitMode=false;splitWith={};currentView='dashboard';renderApp()}
-async function addIncome(){const inp=document.getElementById('incomeAmount'),note=document.getElementById('incomeNote');if(!inp?.value)return;const raw=parseFloat(inp.value);if(isNaN(raw))return;const isV=incomeCurrency==='ves';const isE=incomeCurrency==='eur';if(isV&&!tasaBCV)return;const amt=isV?raw/tasaBCV:raw;monthData.income.push({id:Date.now(),amount:amt,originalAmount:raw,originalCurrency:incomeCurrency,tasaUsed:isV?tasaBCV:null,note:note?.value||'',date:new Date().toISOString(),addedBy:user.displayName||user.email});await saveMonthData();incomeCurrency='usd';currentView='dashboard';renderApp()}
+async function addTransaction(){const inp=document.getElementById('expenseAmount'),note=document.getElementById('expenseNote');if(!selectedCat||!inp?.value)return;const raw=parseFloat(inp.value);if(isNaN(raw))return;const isV=expenseCurrency==='ves';if(isV&&!tasaBCV)return;const amt=isV?raw/tasaBCV:raw;const swUids=splitMode?Object.keys(splitWith):[];const expDateVal=document.getElementById('expenseDate')?.value;const expDate=expDateVal?new Date(expDateVal+'T12:00:00').toISOString():new Date().toISOString();const splitDetails=splitMode&&splitType!=='equal'?Object.fromEntries(swUids.map(uid=>[uid,splitCustom[uid]||0])):null;monthData.transactions.push({id:Date.now(),category:selectedCat,amount:amt,originalAmount:raw,originalCurrency:expenseCurrency,tasaUsed:isV?tasaBCV:null,note:note?.value||'',date:expDate,addedBy:user.displayName||user.email,paidBy:user.uid,splitWith:swUids,splitType:splitMode?splitType:'equal',...(splitDetails?{splitDetails}:{})});checkAlerts(selectedCat,getSpent(selectedCat),monthData.limits[selectedCat]||0);await saveMonthData();selectedCat=null;expenseCurrency='usd';splitMode=false;splitWith={};splitType='equal';splitCustom={};currentView='dashboard';renderApp()}
+async function addIncome(){const inp=document.getElementById('incomeAmount'),note=document.getElementById('incomeNote');if(!inp?.value)return;const raw=parseFloat(inp.value);if(isNaN(raw))return;const isV=incomeCurrency==='ves';const isE=incomeCurrency==='eur';if(isV&&!tasaBCV)return;const amt=isV?raw/tasaBCV:(isE&&tasaEUR&&tasaBCV?raw*(tasaEUR/tasaBCV):raw);const incDateVal=document.getElementById('incomeDate')?.value;const incDate=incDateVal?new Date(incDateVal+'T12:00:00').toISOString():new Date().toISOString();monthData.income.push({id:Date.now(),amount:amt,originalAmount:raw,originalCurrency:incomeCurrency,tasaUsed:isV?tasaBCV:(isE?tasaEUR:null),note:note?.value||'',date:incDate,addedBy:user.displayName||user.email});await saveMonthData();incomeCurrency='usd';currentView='dashboard';renderApp()}
 async function deleteTx(id){if(deleteConfirmId===id){monthData.transactions=monthData.transactions.filter(t=>t.id!==id);deleteConfirmId=null;await saveMonthData();renderMainContent()}else{deleteConfirmId=id;renderMainContent()}}
 function cancelDelete(){deleteConfirmId=null;renderMainContent()}
 async function saveLimit(catId){const v=document.getElementById('limitInput')?.value;monthData.limits[catId]=parseFloat(v)||0;await saveMonthData();closeModal();renderMainContent()}
@@ -597,8 +696,9 @@ function renderDashboard(cats){
     :`<div class="card" style="text-align:center;color:var(--muted)"><div style="font-size:28px;margin-bottom:8px">🏷️</div>No hay categorías aún.<br><span class="auth-link" onclick="setView('categories')">Agregar categorías</span></div>`;
   // Tasa BCV card - only show if active
   const dispToggle=dispCurToggleHTML();
-  const tasaCard=tasaBCV?`<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px"><div><div class="label-xs" style="color:var(--orange)">🇻🇪 Tasa BCV</div><div style="font-size:18px;font-weight:600;color:var(--text2);margin-top:2px">Bs. ${tasaBCV}</div></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${dispToggle}<input type="number" id="tasaInput" class="input" style="width:76px;padding:8px 10px;font-size:14px" placeholder="78.50"><button class="btn" style="background:rgba(39,174,96,.3);padding:8px 10px;font-size:13px;border:1px solid rgba(39,174,96,.4)" onclick="fetchBCVAuto()" title="Auto-detectar">🔄</button><button class="btn" style="background:rgba(45,156,219,.3);padding:8px 12px;font-size:13px;border:1px solid rgba(45,156,219,.4)" onclick="saveTasa()">✓</button><button class="btn" style="background:rgba(231,76,60,.15);padding:8px 10px;font-size:13px;color:var(--red);border:1px solid rgba(231,76,60,.2)" onclick="removeTasa()">✕</button></div></div></div>`:`<div class="card" style="text-align:center"><button class="btn" style="background:rgba(255,255,255,0.06);padding:10px 20px;font-size:13px;color:var(--muted)" onclick="openTasaModal()">🇻🇪 Activar Bolívares (tasa BCV)</button></div>`;
-  return`<div class="summary-grid"><div class="card" style="margin:0;background:linear-gradient(135deg,rgba(39,174,96,.18),rgba(39,174,96,.05))"><div class="label-xs" style="color:var(--green);margin-bottom:4px">Ingresos</div><div style="font-size:22px;font-weight:700;color:var(--green)">${formatUSD(ti)}</div></div><div class="card" style="margin:0;background:linear-gradient(135deg,rgba(231,76,60,.18),rgba(231,76,60,.05))"><div class="label-xs" style="color:var(--red);margin-bottom:4px">Gastado</div><div style="font-size:22px;font-weight:700;color:var(--red)">${formatUSD(ts)}</div></div></div><div class="card" style="background:linear-gradient(135deg,rgba(45,156,219,.15),rgba(45,156,219,.04));border-color:rgba(45,156,219,.15)"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="label-xs" style="color:var(--blue);margin-bottom:4px">Presupuesto</div><div style="font-size:24px;font-weight:700;color:var(--text2)">${formatUSD(tb)}</div></div><div style="text-align:right"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Disponible</div><div style="font-size:22px;font-weight:700;color:${avail<0?'var(--red)':'var(--blue)'}">${formatUSD(avail)}</div></div></div>${tb>0?`<div class="progress-bar" style="margin-top:14px"><div class="progress-fill" style="width:${bp}%;background:${bc}"></div></div>`:''}</div>${tasaCard}<div style="padding:0 16px 8px"><h3 class="label-xs" style="color:var(--muted);margin:12px 0 10px">Categorías</h3></div>${catHTML}`
+  const tasaCard=tasaBCV?`<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px"><div><div class="label-xs" style="color:var(--orange)">🇻🇪 Tasa BCV (USD)</div><div style="font-size:18px;font-weight:600;color:var(--text2);margin-top:2px">Bs. ${tasaBCV}</div></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${dispToggle}<input type="number" id="tasaInput" class="input" style="width:76px;padding:8px 10px;font-size:14px" placeholder="78.50"><button class="btn" style="background:rgba(39,174,96,.3);padding:8px 10px;font-size:13px;border:1px solid rgba(39,174,96,.4)" onclick="fetchBCVAuto()" title="Auto-detectar">🔄</button><button class="btn" style="background:rgba(45,156,219,.3);padding:8px 12px;font-size:13px;border:1px solid rgba(45,156,219,.4)" onclick="saveTasa()">✓</button><button class="btn" style="background:rgba(231,76,60,.15);padding:8px 10px;font-size:13px;color:var(--red);border:1px solid rgba(231,76,60,.2)" onclick="removeTasa()">✕</button></div></div></div>`:`<div class="card" style="text-align:center"><button class="btn" style="background:rgba(255,255,255,0.06);padding:10px 20px;font-size:13px;color:var(--muted)" onclick="openTasaModal()">🇻🇪 Activar Bolívares (tasa BCV)</button></div>`;
+  const eurCard=tasaBCV?`<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px"><div><div class="label-xs" style="color:var(--blue)">🇪🇺 Tasa BCV (EUR) — auto</div><div style="font-size:18px;font-weight:600;color:var(--text2);margin-top:2px">${tasaEUR?`Bs. ${tasaEUR}`:'Cargando...'}</div></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input type="number" id="eurTasaInput" class="input" style="width:90px;padding:8px 10px;font-size:14px" placeholder="${tasaEUR||''}"><button id="eurAutoBtn" class="btn" style="background:rgba(39,174,96,.3);padding:8px 10px;font-size:13px;border:1px solid rgba(39,174,96,.4)" onclick="fetchEURBCVAuto()" title="Auto-detectar desde bcvapi.tech">🔄</button><button class="btn" style="background:rgba(45,156,219,.3);padding:8px 12px;font-size:13px;border:1px solid rgba(45,156,219,.4)" onclick="saveEURTasa()">✓</button><button class="btn" style="background:rgba(231,76,60,.15);padding:8px 10px;font-size:13px;color:var(--red);border:1px solid rgba(231,76,60,.2)" onclick="removeEURTasa()">✕</button></div></div></div>`:'';
+  return`<div class="summary-grid"><div class="card" style="margin:0;background:linear-gradient(135deg,rgba(39,174,96,.18),rgba(39,174,96,.05))"><div class="label-xs" style="color:var(--green);margin-bottom:4px">Ingresos</div><div style="font-size:22px;font-weight:700;color:var(--green)">${formatUSD(ti)}</div></div><div class="card" style="margin:0;background:linear-gradient(135deg,rgba(231,76,60,.18),rgba(231,76,60,.05))"><div class="label-xs" style="color:var(--red);margin-bottom:4px">Gastado</div><div style="font-size:22px;font-weight:700;color:var(--red)">${formatUSD(ts)}</div></div></div><div class="card" style="background:linear-gradient(135deg,rgba(45,156,219,.15),rgba(45,156,219,.04));border-color:rgba(45,156,219,.15)"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="label-xs" style="color:var(--blue);margin-bottom:4px">Presupuesto</div><div style="font-size:24px;font-weight:700;color:var(--text2)">${formatUSD(tb)}</div></div><div style="text-align:right"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Disponible</div><div style="font-size:22px;font-weight:700;color:${avail<0?'var(--red)':'var(--blue)'}">${formatUSD(avail)}</div></div></div>${tb>0?`<div class="progress-bar" style="margin-top:14px"><div class="progress-fill" style="width:${bp}%;background:${bc}"></div></div>`:''}</div>${tasaCard}${eurCard}<div style="padding:0 16px 8px"><h3 class="label-xs" style="color:var(--muted);margin:12px 0 10px">Categorías</h3></div>${catHTML}`
 }
 
 // ── ADD EXPENSE ──
@@ -608,18 +708,18 @@ function renderAdd(cats){
   let info='';if(selectedCat){const cat=getCat(selectedCat),sp=getSpent(selectedCat),lim=monthData.limits[selectedCat]||0;info=`<div style="background:${cat.color}15;border:1px solid ${cat.color}40;border-radius:14px;padding:14px;margin-bottom:14px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:18px">${cat.icon}</span><span style="font-weight:600;color:${cat.color}">${cat.name}</span></div><div style="font-size:13px;color:#aaa">Gastado: <strong style="color:var(--text2)">${formatUSD(sp)}</strong>${lim>0?` de ${formatUSD(lim)} — Queda: <strong style="color:${lim-sp<0?'var(--red)':'var(--green)'}">${formatUSD(lim-sp)}</strong>`:''}</div></div>`}
   const isV=expenseCurrency==='ves',dis=!selectedCat||(isV&&!tasaBCV);
   const bsBtn=tasaBCV?`<button class="currency-btn" style="${expenseCurrency==='ves'?'background:var(--orange);border-color:var(--orange)':''}" onclick="setExpCurrency('ves')">🇻🇪 Bs.</button>`:'';
-  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Registrar Gasto</h3><div class="cat-grid">${btns}</div>${info}<div style="margin-bottom:12px"><label class="label-sm">Moneda</label><div class="currency-toggle"><button class="currency-btn" style="${expenseCurrency==='usd'?'background:var(--blue);border-color:var(--blue)':''}" onclick="setExpCurrency('usd')">🇺🇸 USD</button><button class="currency-btn" style="${expenseCurrency==='eur'?'background:var(--green);border-color:var(--green)':''}" onclick="setExpCurrency('eur')">🇪🇺 EUR</button>${bsBtn}</div><label class="label-sm">Monto (${isV?'Bs.':expenseCurrency==='eur'?'EUR':'USD'})</label><input type="text" inputmode="decimal" id="expenseAmount" class="input input-big" placeholder="0.00" oninput="updateExpP()"><div id="expP"></div></div><div style="margin-bottom:12px"><label class="label-sm">Nota (opcional)</label><input type="text" id="expenseNote" class="input" placeholder="Descripción..."></div>${splitSectionHTML()}<button class="btn btn-full" style="background:${dis?'#333':'var(--blue)'}" onclick="addTransaction()" ${dis?'disabled':''}>💸 Registrar Gasto</button></div>`
+  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Registrar Gasto</h3><div class="cat-grid">${btns}</div>${info}<div style="margin-bottom:12px"><label class="label-sm">Moneda</label><div class="currency-toggle"><button class="currency-btn" style="${expenseCurrency==='usd'?'background:var(--blue);border-color:var(--blue)':''}" onclick="setExpCurrency('usd')">🇺🇸 USD</button><button class="currency-btn" style="${expenseCurrency==='eur'?'background:var(--green);border-color:var(--green)':''}" onclick="setExpCurrency('eur')">🇪🇺 EUR</button>${bsBtn}</div><label class="label-sm">Monto (${isV?'Bs.':expenseCurrency==='eur'?'EUR':'USD'})</label><input type="text" inputmode="decimal" id="expenseAmount" class="input input-big" placeholder="0.00" oninput="updateExpP()"><div id="expP"></div></div><div style="margin-bottom:12px"><label class="label-sm">Nota (opcional)</label><input type="text" id="expenseNote" class="input" placeholder="Descripción..."></div><div style="margin-bottom:12px"><label class="label-sm">Fecha del gasto</label><input type="date" id="expenseDate" class="input" value="${new Date().toISOString().split('T')[0]}"></div>${splitSectionHTML()}<button class="btn btn-full" style="background:${dis?'#333':'var(--blue)'}" onclick="addTransaction()" ${dis?'disabled':''}>💸 Registrar Gasto</button></div>`
 }
-function updateExpP(){const el=document.getElementById('expP'),inp=document.getElementById('expenseAmount');if(!el||!inp?.value||!tasaBCV){if(el)el.innerHTML='';return}const a=parseFloat(inp.value);if(isNaN(a)){el.innerHTML='';return}el.innerHTML=expenseCurrency==='ves'?`<div class="conversion-preview" style="background:rgba(45,156,219,.1)"><span style="color:var(--blue)">= <strong>${formatUSD(a/tasaBCV)}</strong> <span style="color:var(--muted);font-size:12px">(tasa ${tasaBCV})</span></span></div>`:`<div class="conversion-preview" style="background:rgba(230,126,34,.1)"><span style="color:var(--orange)">≈ Bs. ${(a*tasaBCV).toFixed(2)}</span></div>`}
+function updateExpP(){const el=document.getElementById('expP'),inp=document.getElementById('expenseAmount');if(!el||!inp?.value){if(el)el.innerHTML='';return}const a=parseFloat(inp.value);if(isNaN(a)){el.innerHTML='';return}if(expenseCurrency==='ves'&&tasaBCV){el.innerHTML=`<div class="conversion-preview" style="background:rgba(45,156,219,.1)"><span style="color:var(--blue)">= <strong>${formatUSD(a/tasaBCV)}</strong> <span style="color:var(--muted);font-size:12px">(tasa ${tasaBCV})</span></span></div>`;return}if(expenseCurrency==='eur'&&tasaEUR){el.innerHTML=`<div class="conversion-preview" style="background:rgba(45,156,219,.1)"><span style="color:var(--blue)">≈ Bs. ${(a*tasaEUR).toFixed(2)} <span style="color:var(--muted);font-size:12px">(tasa EUR ${tasaEUR})</span></span></div>`;return}if(tasaBCV&&expenseCurrency==='usd'){el.innerHTML=`<div class="conversion-preview" style="background:rgba(230,126,34,.1)"><span style="color:var(--orange)">≈ Bs. ${(a*tasaBCV).toFixed(2)}</span></div>`;return}el.innerHTML=''}
 
 // ── INCOME ──
 function renderIncomeView(){
   const isV=incomeCurrency==='ves';let hist='';
   if(monthData.income.length){hist=`<div style="margin-top:20px"><h4 style="font-size:13px;color:var(--muted);margin-bottom:10px">Ingresos del mes</h4>${monthData.income.map(i=>{const ves=i.originalCurrency==='ves'?`<span style="color:var(--orange);margin-left:4px">(Bs.${i.originalAmount?.toFixed(2)}@${i.tasaUsed})</span>`:i.originalCurrency==='eur'?`<span style="color:var(--green);margin-left:4px">(€${i.originalAmount?.toFixed(2)})</span>`:'';const by=i.addedBy?`<span style="color:var(--purple);margin-left:4px">· ${i.addedBy}</span>`:'';const del=deleteConfirmId===('inc_'+i.id)?`<div style="display:flex;gap:4px"><button class="btn btn-xs" style="background:var(--red)" onclick="confirmDeleteIncome(${i.id})">Sí</button><button class="btn btn-xs" style="background:rgba(255,255,255,.1)" onclick="cancelDelete()">No</button></div>`:`<div style="display:flex;gap:4px;flex-shrink:0"><button style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;padding:4px" onclick="openEditIncomeModal(${i.id})">✏️</button><button style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;padding:4px" onclick="deleteConfirmId='inc_'+${i.id};renderMainContent()">🗑</button></div>`;return`<div class="card" style="margin:0 0 8px 0;display:flex;justify-content:space-between;align-items:center"><div style="flex:1"><div style="font-size:14px;font-weight:600;color:var(--green)">${formatUSD(i.amount)}</div><div style="font-size:11px;color:var(--muted)">${i.note||'Sin concepto'}${ves}${by}</div><div style="font-size:11px;color:var(--dim)">${new Date(i.date).toLocaleDateString('es')}</div></div>${del}</div>`}).join('')}</div>`}
   const bsIncBtn=tasaBCV?`<button class="currency-btn" style="${incomeCurrency==='ves'?'background:var(--orange);border-color:var(--orange)':''}" onclick="setIncCurrency('ves')">🇻🇪 Bs.</button>`:'';
-  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Registrar Ingreso</h3><div style="margin-bottom:12px"><label class="label-sm">Moneda</label><div class="currency-toggle"><button class="currency-btn" style="${incomeCurrency==='usd'?'background:var(--green);border-color:var(--green)':''}" onclick="setIncCurrency('usd')">🇺🇸 USD</button><button class="currency-btn" style="${incomeCurrency==='eur'?'background:rgba(45,156,219,.8);border-color:var(--blue)':''}" onclick="setIncCurrency('eur')">🇪🇺 EUR</button>${bsIncBtn}</div><label class="label-sm">Monto (${isV?'Bs.':expenseCurrency==='eur'?'EUR':'USD'})</label><input type="text" inputmode="decimal" id="incomeAmount" class="input input-big" placeholder="0.00" oninput="updateIncP()"><div id="incP"></div></div><div style="margin-bottom:16px"><label class="label-sm">Concepto</label><input type="text" id="incomeNote" class="input" placeholder="Ej: Salario, freelance..."></div><button class="btn btn-full" style="background:var(--green)" onclick="addIncome()">💵 Registrar Ingreso</button>${hist}</div>`
+  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Registrar Ingreso</h3><div style="margin-bottom:12px"><label class="label-sm">Moneda</label><div class="currency-toggle"><button class="currency-btn" style="${incomeCurrency==='usd'?'background:var(--green);border-color:var(--green)':''}" onclick="setIncCurrency('usd')">🇺🇸 USD</button><button class="currency-btn" style="${incomeCurrency==='eur'?'background:rgba(45,156,219,.8);border-color:var(--blue)':''}" onclick="setIncCurrency('eur')">🇪🇺 EUR</button>${bsIncBtn}</div><label class="label-sm">Monto (${isV?'Bs.':expenseCurrency==='eur'?'EUR':'USD'})</label><input type="text" inputmode="decimal" id="incomeAmount" class="input input-big" placeholder="0.00" oninput="updateIncP()"><div id="incP"></div></div><div style="margin-bottom:16px"><label class="label-sm">Concepto</label><input type="text" id="incomeNote" class="input" placeholder="Ej: Salario, freelance..."></div><div style="margin-bottom:12px"><label class="label-sm">Fecha del ingreso</label><input type="date" id="incomeDate" class="input" value="${new Date().toISOString().split('T')[0]}"></div><button class="btn btn-full" style="background:var(--green)" onclick="addIncome()">💵 Registrar Ingreso</button>${hist}</div>`
 }
-function updateIncP(){const el=document.getElementById('incP'),inp=document.getElementById('incomeAmount');if(!el||!inp?.value||!tasaBCV){if(el)el.innerHTML='';return}const a=parseFloat(inp.value);if(isNaN(a)){el.innerHTML='';return}el.innerHTML=incomeCurrency==='ves'?`<div class="conversion-preview" style="background:rgba(45,156,219,.1)"><span style="color:var(--blue)">= <strong>${formatUSD(a/tasaBCV)}</strong> <span style="color:var(--muted);font-size:12px">(tasa ${tasaBCV})</span></span></div>`:`<div class="conversion-preview" style="background:rgba(230,126,34,.1)"><span style="color:var(--orange)">≈ Bs. ${(a*tasaBCV).toFixed(2)}</span></div>`}
+function updateIncP(){const el=document.getElementById('incP'),inp=document.getElementById('incomeAmount');if(!el||!inp?.value){if(el)el.innerHTML='';return}const a=parseFloat(inp.value);if(isNaN(a)){el.innerHTML='';return}if(incomeCurrency==='ves'&&tasaBCV){el.innerHTML=`<div class="conversion-preview" style="background:rgba(45,156,219,.1)"><span style="color:var(--blue)">= <strong>${formatUSD(a/tasaBCV)}</strong> <span style="color:var(--muted);font-size:12px">(tasa ${tasaBCV})</span></span></div>`;return}if(incomeCurrency==='eur'&&tasaEUR){el.innerHTML=`<div class="conversion-preview" style="background:rgba(45,156,219,.1)"><span style="color:var(--blue)">≈ Bs. ${(a*tasaEUR).toFixed(2)} <span style="color:var(--muted);font-size:12px">(tasa EUR ${tasaEUR})</span></span></div>`;return}if(tasaBCV&&incomeCurrency==='usd'){el.innerHTML=`<div class="conversion-preview" style="background:rgba(230,126,34,.1)"><span style="color:var(--orange)">≈ Bs. ${(a*tasaBCV).toFixed(2)}</span></div>`;return}el.innerHTML=''}
 
 // ── LIMITS ──
 function renderLimits(cats){
@@ -650,7 +750,19 @@ function updateConv(){const el=document.getElementById('convR'),inp=document.get
 // ── MEMBERS ──
 function renderMembers(){
   const members=currentSpace?.members||[],code=currentSpace?.code||'------';
-  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Equipo</h3><div class="card" style="margin:0 0 16px 0;text-align:center"><div style="font-size:12px;color:var(--muted);margin-bottom:8px">Código de invitación</div><div class="space-code" onclick="copyCode()">${code}</div><div style="font-size:11px;color:var(--dim);margin-top:8px">Toca para copiar</div></div><div class="label-xs" style="color:var(--muted);margin-bottom:10px">Miembros (${members.length}/4)</div>${members.map(m=>{const me=m.uid===user?.uid,ow=m.uid===currentSpace?.ownerId;return`<div class="card" style="margin:0 0 8px 0;display:flex;justify-content:space-between;align-items:center"><div style="display:flex;align-items:center;gap:10px"><div style="width:34px;height:34px;border-radius:50%;background:${ow?'var(--blue)':'var(--purple)'}30;display:flex;align-items:center;justify-content:center;font-size:15px">${ow?'👑':'👤'}</div><div><div style="font-size:14px;font-weight:600;color:var(--text2)">${m.name}${me?' (tú)':''}</div><div style="font-size:11px;color:var(--muted)">${m.email}</div></div></div><div style="font-size:11px;color:${ow?'var(--blue)':'var(--muted)'}">${ow?'Admin':'Miembro'}</div></div>`}).join('')}</div>`
+  const isOwner=currentSpace?.ownerId===user?.uid;
+  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Equipo</h3><div class="card" style="margin:0 0 16px 0;text-align:center"><div style="font-size:12px;color:var(--muted);margin-bottom:8px">Código de invitación</div><div class="space-code" onclick="copyCode()">${code}</div><div style="font-size:11px;color:var(--dim);margin-top:6px">Toca para copiar</div>${isOwner?`<button class="btn btn-sm" style="margin-top:10px;background:rgba(231,76,60,0.12);color:var(--red);border:1px solid rgba(231,76,60,0.2);font-size:12px" onclick="regenerateSpaceCode()">🔄 Generar nuevo código</button><div style="font-size:10px;color:var(--dim);margin-top:5px">El código anterior dejará de funcionar</div>`:''}</div><div class="label-xs" style="color:var(--muted);margin-bottom:10px">Miembros (${members.length}/4)</div>${members.map(m=>{const me=m.uid===user?.uid,ow=m.uid===currentSpace?.ownerId;return`<div class="card" style="margin:0 0 8px 0;display:flex;justify-content:space-between;align-items:center"><div style="display:flex;align-items:center;gap:10px"><div style="width:34px;height:34px;border-radius:50%;background:${ow?'var(--blue)':'var(--purple)'}30;display:flex;align-items:center;justify-content:center;font-size:15px">${ow?'👑':'👤'}</div><div><div style="font-size:14px;font-weight:600;color:var(--text2)">${m.name}${me?' (tú)':''}</div><div style="font-size:11px;color:var(--muted)">${m.email}</div></div></div><div style="font-size:11px;color:${ow?'var(--blue)':'var(--muted)'}">${ow?'Admin':'Miembro'}</div></div>`}).join('')}</div>`
+}
+
+async function regenerateSpaceCode(){
+  if(!confirm('¿Generar un nuevo código? El código actual dejará de funcionar de inmediato.'))return;
+  try{
+    const newCode=genCode();
+    await db.collection('spaces').doc(currentSpace.id).update({code:newCode});
+    currentSpace={...currentSpace,code:newCode};
+    showToast('🔄 Nuevo código generado','var(--green)');
+    renderMainContent();
+  }catch(e){showToast(e.message,'var(--red)')}
 }
 
 // ═══ ONBOARDING ═══
