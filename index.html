@@ -284,7 +284,7 @@ function pickColor(el,c){window._selColor=c;document.querySelectorAll('.color-op
 // ═══ MONTH DATA ═══
 function subscribeToMonth(){if(unsubMonth)unsubMonth();if(!currentSpace||!currentProject)return;
   unsubMonth=db.collection('spaces').doc(currentSpace.id).collection('projects').doc(currentProject.id).collection('months').doc(currentMonth).onSnapshot(s=>{
-    if(s.exists){const d=s.data();monthData={limits:d.limits||{},transactions:d.transactions||[],income:d.income||[],usdt:d.usdt||[]}}else monthData={limits:{},transactions:[],income:[],usdt:[]};
+    if(s.exists){const d=s.data();monthData={limits:d.limits||{},transactions:d.transactions||[],income:d.income||[],usdt:d.usdt||[],transfers:d.transfers||[],settledDebts:d.settledDebts||[]}}else monthData={limits:{},transactions:[],income:[],usdt:[],transfers:[],settledDebts:[]};
     if(appScreen==='main')renderMainContent()
   })
 }
@@ -366,8 +366,8 @@ function renderBalances(){
   const owes=computeOwes();
   const members=currentSpace?.members||[];
   const me=user.uid;
+  const settled=monthData.settledDebts||[];
   let rows='';
-  // Deudas que me involucran
   members.forEach(debtor=>{
     if(!owes[debtor.uid])return;
     Object.entries(owes[debtor.uid]).forEach(([credUid,amt])=>{
@@ -376,16 +376,71 @@ function renderBalances(){
       const isMeDebtor=debtor.uid===me;
       const isMeCred=credUid===me;
       if(!isMeDebtor&&!isMeCred)return;
-      rows+=`<div class="bal-debt"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:13px;color:var(--text)">${isMeDebtor?'🧾 Tú debes':('🧾 '+debtor.name+' debe')}</span><span style="font-size:13px;color:var(--muted)"> a ${isMeCred?'ti':(cred?.name||credUid)}</span></div><span style="font-size:16px;font-weight:700;color:var(--purple)">${formatUSD(amt)}</span></div>${isMeDebtor?`<div style="font-size:11px;color:var(--dim);margin-top:4px">💜 Puedes saldar con USDT en la pestaña ₮</div>`:''}</div>`;
+      const isSettled=settled.some(s=>s.debtor===debtor.uid&&s.creditor===credUid);
+      const settleBtn=isSettled
+        ?`<div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;color:var(--green)">✅ Deuda saldada</span><button class="btn btn-xs" style="background:rgba(255,255,255,0.07);color:var(--muted)" onclick="unsettleDebt('${debtor.uid}','${credUid}')">Reabrir</button></div>`
+        :`<div style="margin-top:8px;text-align:right"><button class="btn btn-sm" style="background:rgba(39,174,96,0.18);color:var(--green);border:1px solid rgba(39,174,96,0.3)" onclick="settleDebt('${debtor.uid}','${credUid}')">✓ Marcar como saldada</button></div>`;
+      rows+=`<div class="bal-debt" style="${isSettled?'opacity:.55':''}"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:13px;color:var(--text)">${isMeDebtor?'🧾 Tú debes':('🧾 '+debtor.name+' debe')}</span><span style="font-size:13px;color:var(--muted)"> a ${isMeCred?'ti':(cred?.name||credUid)}</span></div><span style="font-size:16px;font-weight:700;color:${isSettled?'var(--muted)':'var(--purple)'};">${formatUSD(amt)}</span></div>${settleBtn}</div>`;
     });
   });
   if(!rows)rows=`<div style="text-align:center;color:var(--green);font-size:14px;padding:20px">✓ Sin deudas pendientes</div>`;
-  // Resumen de gastos compartidos del mes
   const total=sharedTxs.reduce((s,t)=>s+t.amount,0);
   return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">⚖️ Deudas — ${mLabel()}</h3><div class="card" style="margin:0 0 16px 0"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="label-xs" style="color:var(--purple)">Total dividido</div><div style="font-size:20px;font-weight:700;color:var(--text2)">${formatUSD(total)}</div></div><div style="font-size:12px;color:var(--muted)">${sharedTxs.length} gasto${sharedTxs.length>1?'s':''}</div></div></div>${rows}</div>`
 }
 
-// ═══ USDT ═══
+// ═══ SALDAR DEUDAS ═══
+async function settleDebt(debtorUid,creditorUid){
+  if(!monthData.settledDebts)monthData.settledDebts=[];
+  monthData.settledDebts=monthData.settledDebts.filter(s=>!(s.debtor===debtorUid&&s.creditor===creditorUid));
+  monthData.settledDebts.push({debtor:debtorUid,creditor:creditorUid,date:new Date().toISOString(),settledBy:user.uid});
+  await saveMonthData();showToast('✅ Deuda marcada como saldada','var(--green)');renderMainContent()
+}
+async function unsettleDebt(debtorUid,creditorUid){
+  monthData.settledDebts=(monthData.settledDebts||[]).filter(s=>!(s.debtor===debtorUid&&s.creditor===creditorUid));
+  await saveMonthData();renderMainContent()
+}
+
+// ═══ TRANSFERENCIAS ═══
+function transferFieldsHTML(type){
+  const VE=['Banesco','Banco de Venezuela','Mercantil','BBVA Provincial','Banco Exterior','BNC','Bancamiga','Banplus','Sofitasa','Banco Activo','BOD','Banco Fondo Común','Caroni','Del Tesoro','Bicentenario','Venezolano de Crédito','BanFanb','Bancrecer'];
+  const USA=['Bank of America','Chase','Wells Fargo','Citibank','Capital One','TD Bank','US Bank','PNC Bank','Truist','Ally Bank','Navy Federal','Charles Schwab','Goldman Sachs (Marcus)','Discover Bank','Fifth Third Bank'];
+  const NETS=['TRC-20 (Tron)','ERC-20 (Ethereum)','BEP-20 (BSC)','Solana','Polygon (MATIC)','Arbitrum','Avalanche (AVAX-C)','TON','Optimism'];
+  const veOpts=VE.map(b=>`<option>${b}</option>`).join('');
+  const usaOpts=USA.map(b=>`<option>${b}</option>`).join('');
+  const netOpts=NETS.map(n=>`<option>${n}</option>`).join('');
+  switch(type){
+    case'pagomovil':return`<div style="margin-bottom:10px"><label class="label-sm">Banco</label><select id="trfBank" class="input"><option value="">Selecciona banco...</option>${veOpts}</select></div><div style="margin-bottom:10px"><label class="label-sm">Teléfono / Cédula</label><input type="text" id="trfPhone" class="input" placeholder="04xx-xxxxxxx o V-xxxxxxxxx"></div>`;
+    case've':return`<div style="margin-bottom:10px"><label class="label-sm">Banco origen</label><select id="trfBank" class="input"><option value="">Selecciona banco...</option>${veOpts}</select></div><div style="margin-bottom:10px"><label class="label-sm">Nº de referencia</label><input type="text" id="trfRef" class="input" placeholder="Número de confirmación..."></div>`;
+    case'usa':return`<div style="margin-bottom:10px"><label class="label-sm">Banco</label><select id="trfBank" class="input"><option value="">Selecciona banco...</option>${usaOpts}</select></div><div style="margin-bottom:10px"><label class="label-sm">Nº de confirmación</label><input type="text" id="trfRef" class="input" placeholder="Referencia de la transferencia..."></div>`;
+    case'zelle':return`<div style="margin-bottom:10px"><label class="label-sm">Banco</label><select id="trfBank" class="input"><option value="">Selecciona banco...</option>${usaOpts}</select></div><div style="margin-bottom:10px"><label class="label-sm">Email / Teléfono Zelle</label><input type="text" id="trfZelleId" class="input" placeholder="email@ejemplo.com o +1 xxx xxx xxxx"></div>`;
+    case'usdt':return`<div style="margin-bottom:10px"><label class="label-sm">Red</label><select id="trfUsdtNet" class="input"><option value="">Selecciona red...</option>${netOpts}</select></div><div style="margin-bottom:10px"><label class="label-sm">Hash de transacción (opcional)</label><input type="text" id="trfHash" class="input" style="font-size:12px;font-family:monospace" placeholder="0x... o TXxxx..."></div>`;
+    default:return'';
+  }
+}
+function updateTransferFields(){
+  const type=document.getElementById('trfType')?.value||'';
+  const el=document.getElementById('trfDynamic');
+  if(el)el.innerHTML=transferFieldsHTML(type);
+}
+function renderTransfers(){
+  const allTrf=[...(monthData.transfers||[]),...(monthData.usdt||[]).map(u=>({...u,type:'usdt',typeLabel:'USDT'}))].sort((a,b)=>b.id-a.id);
+  const members=(currentSpace?.members||[]).filter(m=>m.uid!==user.uid);
+  const memberOpts=members.map(m=>`<option value="${m.uid}">${m.name}</option>`).join('');
+  const toField=members.length?`<div style="margin-bottom:10px"><label class="label-sm">Enviado a</label><select id="trfTo" class="input"><option value="">Selecciona persona...</option>${memberOpts}</select></div>`:`<div style="margin-bottom:10px"><label class="label-sm">Enviado a (nombre, email o wallet)</label><input type="text" id="trfToText" class="input" placeholder="Nombre, email o dirección..."></div>`;
+  const typeIcons={pagomovil:'📱',ve:'🇻🇪',usa:'🇺🇸',zelle:'💸',usdt:'₮'};
+  const typeLabels={pagomovil:'Pago Móvil',ve:'Transf. Venezuela',usa:'Transf. EE.UU.',zelle:'Zelle',usdt:'USDT'};
+  const list=allTrf.length?allTrf.map(p=>{
+    const isNew=!!(monthData.transfers||[]).find(t=>t.id===p.id);
+    const delKey='trf_'+p.id;
+    const del=deleteConfirmId===delKey?`<div style="display:flex;gap:4px"><button class="btn btn-xs" style="background:var(--red)" onclick="deleteTransfer(${p.id})">Sí</button><button class="btn btn-xs" style="background:rgba(255,255,255,.1)" onclick="cancelDelete()">No</button></div>`:`<button style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:4px" onclick="deleteConfirmId='trf_'+${p.id};renderMainContent()">🗑</button>`;
+    const typeIcon=typeIcons[p.type]||'💸';const typeLbl=typeLabels[p.type]||p.type||'';
+    const extra=[p.bank?`🏦 ${p.bank}`:'',p.ref?`#${p.ref}`:'',p.phone?`📞 ${p.phone}`:'',p.zelleId?`📧 ${p.zelleId}`:'',p.usdtNet||p.note?.includes('(')?'':'',p.txHash?`Hash: ${p.txHash.length>20?p.txHash.slice(0,16)+'…':p.txHash}`:''].filter(Boolean).join(' · ');
+    return`<div class="usdt-row"><div style="flex:1"><div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span>${typeIcon}</span><span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px">${typeLbl}</span><span style="font-size:15px;font-weight:700;color:var(--green);margin-left:auto">$${p.amount}</span></div><div style="font-size:12px;color:var(--muted)">${p.fromName||'?'} → ${p.toName||'?'}</div>${extra?`<div style="font-size:11px;color:var(--dim);margin-top:2px">${extra}</div>`:''}${p.note?`<div style="font-size:11px;color:var(--muted)">${p.note}</div>`:''}<div style="font-size:11px;color:var(--dim)">${new Date(p.date).toLocaleDateString('es')}</div></div>${del}</div>`
+  }).join(''):`<div style="text-align:center;color:var(--dim);padding:30px;font-size:14px">Sin transferencias este mes</div>`;
+  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">🔄 Transferencias</h3><div class="card" style="margin:0 0 16px 0"><h4 style="font-size:13px;color:var(--text2);margin-bottom:12px">Registrar transferencia</h4><div style="margin-bottom:10px"><label class="label-sm">Tipo de transferencia</label><select id="trfType" class="input" onchange="updateTransferFields()"><option value="">Selecciona tipo...</option><option value="pagomovil">📱 Pago Móvil</option><option value="ve">🇻🇪 Transferencia Venezuela</option><option value="usa">🇺🇸 Transferencia EE.UU.</option><option value="zelle">💸 Zelle</option><option value="usdt">₮ USDT</option></select></div><div id="trfDynamic"></div>${toField}<div style="margin-bottom:10px"><label class="label-sm">Monto (USD)</label><input type="text" inputmode="decimal" id="trfAmt" class="input" placeholder="0.00"></div><div style="margin-bottom:12px"><label class="label-sm">Nota (opcional)</label><input type="text" id="trfNote" class="input" placeholder="Pago de deuda, freelance, alquiler..."></div><button class="btn btn-full" style="background:var(--green)" onclick="addTransfer()">✓ Registrar Transferencia</button></div><h4 style="font-size:13px;color:var(--muted);margin-bottom:10px">Historial — ${mLabel()}</h4>${list}</div>`
+}
+
+// ═══ USDT (legacy) ═══
 function renderUSDT(){
   const usdt=monthData.usdt||[];
   const members=(currentSpace?.members||[]).filter(m=>m.uid!==user.uid);
@@ -419,7 +474,32 @@ async function addUSDTTransfer(){
   showToast(`₮ ${amt} USDT enviado a ${toName}`,'var(--green)');
   renderMainContent()
 }
+async function addTransfer(){
+  const type=document.getElementById('trfType')?.value||'';
+  if(!type)return showToast('Selecciona el tipo de transferencia');
+  const toUid=document.getElementById('trfTo')?.value||'';
+  const toText=document.getElementById('trfToText')?.value?.trim()||'';
+  const toName=toUid?((currentSpace?.members||[]).find(m=>m.uid===toUid)?.name||toUid):toText;
+  if(!toUid&&!toText)return showToast('Indica el destinatario');
+  const amt=parseFloat(document.getElementById('trfAmt')?.value);
+  if(!amt||isNaN(amt)||amt<=0)return showToast('Monto inválido');
+  const note=document.getElementById('trfNote')?.value?.trim()||'';
+  const bank=document.getElementById('trfBank')?.value||'';
+  const ref=document.getElementById('trfRef')?.value?.trim()||'';
+  const phone=document.getElementById('trfPhone')?.value?.trim()||'';
+  const zelleId=document.getElementById('trfZelleId')?.value?.trim()||'';
+  const usdtNet=document.getElementById('trfUsdtNet')?.value||'';
+  const txHash=document.getElementById('trfHash')?.value?.trim()||'';
+  const typeLabels={pagomovil:'Pago Móvil',ve:'Transf. Venezuela',usa:'Transf. EE.UU.',zelle:'Zelle',usdt:'USDT'};
+  const transfer={id:Date.now(),type,typeLabel:typeLabels[type]||type,fromUid:user.uid,fromName:user.displayName||user.email,toUid,toName,amount:amt,bank,ref,phone,zelleId,usdtNet,txHash,note,date:new Date().toISOString()};
+  if(!monthData.transfers)monthData.transfers=[];
+  monthData.transfers.push(transfer);
+  await saveMonthData();
+  showToast(`✓ Transferencia registrada a ${toName}`,'var(--green)');
+  renderMainContent()
+}
 async function deleteUSDT(id){monthData.usdt=(monthData.usdt||[]).filter(p=>p.id!==id);deleteConfirmId=null;await saveMonthData();renderMainContent()}
+async function deleteTransfer(id){monthData.transfers=(monthData.transfers||[]).filter(p=>p.id!==id);deleteConfirmId=null;await saveMonthData();renderMainContent()}
 
 function detachAll(){[unsubMonth,unsubSpace,unsubTasa,unsubProjects].forEach(u=>{if(u)u()});unsubMonth=unsubSpace=unsubTasa=unsubProjects=null}
 
@@ -498,12 +578,12 @@ function renderMainContent(){
     case'categories':c.innerHTML=renderCategoriesView(cats);break;
     case'members':c.innerHTML=renderMembers();break;
     case'balances':c.innerHTML=renderBalances();break;
-    case'usdt':c.innerHTML=renderUSDT();break;
+    case'usdt':case'transfers':c.innerHTML=renderTransfers();break;
   }
   let tabs=[{id:'dashboard',icon:'📊',label:'Inicio'},{id:'add',icon:'💸',label:'Gasto'},{id:'income',icon:'💵',label:'Ingreso'},{id:'limits',icon:'📏',label:'Límites'},{id:'history',icon:'📋',label:'Historial'},{id:'categories',icon:'🏷️',label:'Categ.'},{id:'members',icon:'👥',label:'Equipo'}];
   if(tasaBCV)tabs.splice(6,0,{id:'converter',icon:'💱',label:'Conv.'});
   if(currentProject?.shared)tabs.push({id:'balances',icon:'⚖️',label:'Deudas'});
-  tabs.push({id:'usdt',icon:'₮',label:'USDT'});
+  tabs.push({id:'transfers',icon:'🔄',label:'Transf.'});
   const sb=document.getElementById('desktopSidebar');if(sb)sb.innerHTML=tabs.map(t=>`<button class="sidebar-tab ${currentView===t.id?'active':''}" onclick="setView('${t.id}')"><span class="s-icon">${t.icon}</span><span>${t.label}</span></button>`).join('');
   document.getElementById('bottomNav').innerHTML=tabs.map(t=>`<button class="nav-tab ${currentView===t.id?'active':''}" onclick="setView('${t.id}')"><span class="icon">${t.icon}</span><span>${t.label}</span></button>`).join('');
 }
@@ -551,7 +631,7 @@ function renderLimits(cats){
 function renderHistory(){
   const sorted=[...monthData.transactions].sort((a,b)=>b.id-a.id);
   if(!sorted.length)return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Historial — ${mLabel()}</h3><div style="text-align:center;color:var(--dim);margin-top:40px;font-size:14px">Sin gastos este mes</div></div>`;
-  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Historial — ${mLabel()}</h3>${sorted.map(tx=>{const cat=getCat(tx.category);const ves=tx.originalCurrency==='ves'?`<div style="font-size:10px;color:var(--orange)">Bs.${tx.originalAmount?.toFixed(2)}@${tx.tasaUsed}</div>`:tx.originalCurrency==='eur'?`<div style="font-size:10px;color:var(--green)">€${tx.originalAmount?.toFixed(2)}</div>`:'';const by=tx.addedBy?`<span style="color:var(--purple)"> · ${tx.addedBy}</span>`:'';const del=deleteConfirmId===tx.id?`<div style="display:flex;gap:4px"><button class="btn btn-xs" style="background:var(--red)" onclick="deleteTx(${tx.id})">Sí</button><button class="btn btn-xs" style="background:rgba(255,255,255,.1)" onclick="cancelDelete()">No</button></div>`:`<button style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:4px" onclick="deleteTx(${tx.id})">🗑</button>`;return`<div class="tx-row"><div style="display:flex;align-items:center;gap:10px;flex:1"><span style="font-size:18px">${cat?.icon||'❓'}</span><div><div style="font-size:13px;font-weight:600;color:var(--text2)">${cat?.name||'Eliminada'}</div><div style="font-size:11px;color:var(--muted)">${new Date(tx.date).toLocaleDateString('es')}${tx.note?` · ${tx.note}`:''}${by}</div></div></div><div style="display:flex;align-items:center;gap:8px"><div style="text-align:right"><span style="font-size:15px;font-weight:700;color:var(--red)">-${formatUSD(tx.amount)}</span>${ves}</div>${del}</div></div>`}).join('')}</div>`
+  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Historial — ${mLabel()}</h3>${sorted.map(tx=>{const cat=getCat(tx.category);const ves=tx.originalCurrency==='ves'?`<div style="font-size:10px;color:var(--orange)">Bs.${tx.originalAmount?.toFixed(2)}@${tx.tasaUsed}</div>`:tx.originalCurrency==='eur'?`<div style="font-size:10px;color:var(--green)">€${tx.originalAmount?.toFixed(2)}</div>`:'';const by=tx.addedBy?`<span style="color:var(--purple)"> · ${tx.addedBy}</span>`:'';const splitBadge=tx.splitWith?.length?`<span style="font-size:10px;background:rgba(155,81,224,.15);color:var(--purple);border-radius:6px;padding:1px 5px;margin-left:4px;vertical-align:middle">💸 Dividido</span>`:'';const del=deleteConfirmId===tx.id?`<div style="display:flex;gap:4px"><button class="btn btn-xs" style="background:var(--red)" onclick="deleteTx(${tx.id})">Sí</button><button class="btn btn-xs" style="background:rgba(255,255,255,.1)" onclick="cancelDelete()">No</button></div>`:`<button style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:4px" onclick="deleteTx(${tx.id})">🗑</button>`;return`<div class="tx-row"><div style="display:flex;align-items:center;gap:10px;flex:1"><span style="font-size:18px">${cat?.icon||'❓'}</span><div><div style="font-size:13px;font-weight:600;color:var(--text2)">${cat?.name||'Eliminada'}${splitBadge}</div><div style="font-size:11px;color:var(--muted)">${new Date(tx.date).toLocaleDateString('es')}${tx.note?` · ${tx.note}`:''}${by}</div></div></div><div style="display:flex;align-items:center;gap:8px"><div style="text-align:right"><span style="font-size:15px;font-weight:700;color:var(--red)">-${formatUSD(tx.amount)}</span>${ves}</div>${del}</div></div>`}).join('')}</div>`
 }
 
 // ── CATEGORIES ──
