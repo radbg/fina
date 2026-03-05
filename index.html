@@ -334,8 +334,8 @@ function toggleSplitMode(){splitMode=!splitMode;if(!splitMode)splitWith={};rende
 function toggleSplitMember(uid){if(splitWith[uid])delete splitWith[uid];else splitWith[uid]=true;renderMainContent()}
 function splitSectionHTML(){
   const members=(currentSpace?.members||[]).filter(m=>m.uid!==user.uid);
-  if(!members.length||!currentProject?.shared)return'';
-  return`<div style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:13px;font-weight:600;color:var(--text2)">💸 Dividir gasto</span><button class="btn btn-sm" style="background:${splitMode?'var(--purple)':'rgba(255,255,255,0.08)'}" onclick="toggleSplitMode()">${splitMode?'Activado ✓':'Dividir'}</button></div>${splitMode?`<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Partes iguales con:</div>${members.map(m=>`<div class="split-member ${splitWith[m.uid]?'sel':''}" onclick="toggleSplitMember('${m.uid}')"><span>${splitWith[m.uid]?'☑':'☐'}</span><span style="font-size:14px;color:var(--text2)">${m.name}</span></div>`).join('')}`:''}</div>`
+  const noMembers=!members.length;
+  return`<div style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:13px;font-weight:600;color:var(--text2)">💸 Dividir gasto</span><button class="btn btn-sm" style="background:${splitMode?'var(--purple)':'rgba(255,255,255,0.08)'}" onclick="toggleSplitMode()">${splitMode?'Activado ✓':'Dividir'}</button></div>${splitMode?(noMembers?`<div style="font-size:12px;color:var(--muted);background:rgba(255,255,255,0.04);border-radius:10px;padding:10px">👥 Invita miembros al espacio para dividir gastos entre ellos.</div>`:`<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Partes iguales con:</div>${members.map(m=>`<div class="split-member ${splitWith[m.uid]?'sel':''}" onclick="toggleSplitMember('${m.uid}')"><span>${splitWith[m.uid]?'☑':'☐'}</span><span style="font-size:14px;color:var(--text2)">${m.name}</span></div>`).join('')}`):''}</div>`
 }
 
 // ═══ BALANCES ═══
@@ -397,22 +397,26 @@ function renderUSDT(){
     const del=deleteConfirmId===('usdt_'+p.id)?`<div style="display:flex;gap:4px"><button class="btn btn-xs" style="background:var(--red)" onclick="deleteUSDT(${p.id})">Sí</button><button class="btn btn-xs" style="background:rgba(255,255,255,.1)" onclick="cancelDelete()">No</button></div>`:`<button style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:4px" onclick="deleteConfirmId='usdt_'+${p.id};renderMainContent()">🗑</button>`;
     return`<div class="usdt-row"><div style="flex:1"><div style="font-size:15px;font-weight:700;color:var(--green)">₮ ${p.amount} USDT</div><div style="font-size:12px;color:var(--muted)">${from?.name||p.fromName||'?'} → ${to?.name||p.toName||'?'}</div>${p.txHash?`<div style="font-size:10px;color:var(--dim);font-family:monospace;word-break:break-all;margin-top:2px">🔗 ${p.txHash.length>30?p.txHash.slice(0,20)+'...':p.txHash}</div>`:''}${p.note?`<div style="font-size:11px;color:var(--muted)">${p.note}</div>`:''}<div style="font-size:11px;color:var(--dim)">${new Date(p.date).toLocaleDateString('es')}</div></div>${del}</div>`
   }).join(''):`<div style="text-align:center;color:var(--dim);padding:30px;font-size:14px">Sin transferencias USDT este mes</div>`;
-  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">₮ Pagos USDT</h3><div class="card" style="margin:0 0 16px 0"><h4 style="font-size:13px;color:var(--text2);margin-bottom:12px">Registrar transferencia</h4>${members.length?`<div style="margin-bottom:10px"><label class="label-sm">Enviado a</label><select id="usdtTo" class="input">${memberOpts}</select></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px"><div><label class="label-sm">Monto USDT</label><input type="text" inputmode="decimal" id="usdtAmt" class="input" placeholder="25.00"></div><div><label class="label-sm">Red</label><input type="text" id="usdtNet" class="input" placeholder="TRC-20"></div></div><div style="margin-bottom:10px"><label class="label-sm">Hash (opcional)</label><input type="text" id="usdtHash" class="input" style="font-size:12px;font-family:monospace" placeholder="0x... o TXxxx..."></div><div style="margin-bottom:12px"><label class="label-sm">Nota (opcional)</label><input type="text" id="usdtNote" class="input" placeholder="Pago de deuda, freelance..."></div><button class="btn btn-full" style="background:var(--green)" onclick="addUSDTTransfer()">₮ Registrar Pago USDT</button>`:`<div style="text-align:center;color:var(--muted);font-size:13px">Necesitas al menos un miembro más en el espacio para registrar transferencias</div>`}</div><h4 style="font-size:13px;color:var(--muted);margin-bottom:10px">Historial — ${mLabel()}</h4>${list}</div>`
+  const toField=members.length
+    ?`<div style="margin-bottom:10px"><label class="label-sm">Enviado a</label><select id="usdtTo" class="input">${memberOpts}</select></div>`
+    :`<div style="margin-bottom:10px"><label class="label-sm">Enviado a (nombre o wallet)</label><input type="text" id="usdtToText" class="input" placeholder="Nombre, email o dirección..."></div>`;
+  return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">₮ Pagos USDT</h3><div class="card" style="margin:0 0 16px 0"><h4 style="font-size:13px;color:var(--text2);margin-bottom:12px">Registrar transferencia</h4>${toField}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px"><div><label class="label-sm">Monto USDT</label><input type="text" inputmode="decimal" id="usdtAmt" class="input" placeholder="25.00"></div><div><label class="label-sm">Red</label><input type="text" id="usdtNet" class="input" placeholder="TRC-20"></div></div><div style="margin-bottom:10px"><label class="label-sm">Hash (opcional)</label><input type="text" id="usdtHash" class="input" style="font-size:12px;font-family:monospace" placeholder="0x... o TXxxx..."></div><div style="margin-bottom:12px"><label class="label-sm">Nota (opcional)</label><input type="text" id="usdtNote" class="input" placeholder="Pago de deuda, freelance..."></div><button class="btn btn-full" style="background:var(--green)" onclick="addUSDTTransfer()">₮ Registrar Pago USDT</button></div><h4 style="font-size:13px;color:var(--muted);margin-bottom:10px">Historial — ${mLabel()}</h4>${list}</div>`
 }
 async function addUSDTTransfer(){
-  const toUid=document.getElementById('usdtTo')?.value;
+  const toUid=document.getElementById('usdtTo')?.value||'';
+  const toText=document.getElementById('usdtToText')?.value?.trim()||'';
+  const toName=toUid?((currentSpace?.members||[]).find(m=>m.uid===toUid)?.name||toUid):toText;
+  if(!toUid&&!toText)return showToast('Indica el destinatario');
   const amt=parseFloat(document.getElementById('usdtAmt')?.value);
-  if(!toUid)return showToast('Selecciona destinatario');
   if(!amt||isNaN(amt)||amt<=0)return showToast('Monto inválido');
   const hash=document.getElementById('usdtHash')?.value?.trim()||'';
   const note=document.getElementById('usdtNote')?.value?.trim()||'';
   const net=document.getElementById('usdtNet')?.value?.trim()||'';
-  const toMember=(currentSpace?.members||[]).find(m=>m.uid===toUid);
-  const transfer={id:Date.now(),fromUid:user.uid,fromName:user.displayName||user.email,toUid,toName:toMember?.name||toUid,amount:amt,txHash:hash,note:note+(net?` (${net})`:''),date:new Date().toISOString()};
+  const transfer={id:Date.now(),fromUid:user.uid,fromName:user.displayName||user.email,toUid,toName,amount:amt,txHash:hash,note:note+(net?` (${net})`:''),date:new Date().toISOString()};
   if(!monthData.usdt)monthData.usdt=[];
   monthData.usdt.push(transfer);
   await saveMonthData();
-  showToast(`₮ ${amt} USDT enviado a ${toMember?.name}`,'var(--green)');
+  showToast(`₮ ${amt} USDT enviado a ${toName}`,'var(--green)');
   renderMainContent()
 }
 async function deleteUSDT(id){monthData.usdt=(monthData.usdt||[]).filter(p=>p.id!==id);deleteConfirmId=null;await saveMonthData();renderMainContent()}
