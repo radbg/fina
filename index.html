@@ -825,7 +825,12 @@ function updateConv(){
 
 // ── MEMBERS ──
 function renderMembers(){
-  // Código y miembros a nivel de PROYECTO (no espacio)
+  // Auto-generar código para proyectos compartidos antiguos sin código
+  const isProjOwnerCheck=currentProject?.ownerId===user?.uid;
+  if(!currentProject?.code&&currentProject?.shared&&isProjOwnerCheck){
+    regenerateProjectCode(true);
+    return`<div style="padding:40px 16px;text-align:center;color:var(--muted)"><div style="font-size:28px;margin-bottom:8px">⏳</div>Generando código de carpeta...</div>`;
+  }
   const projCode=currentProject?.code||'------';
   const projMemberUids=currentProject?.memberUids||[];
   const allSpaceMembers=currentSpace?.members||[];
@@ -834,18 +839,17 @@ function renderMembers(){
   return`<div style="padding:0 16px"><h3 style="font-size:16px;color:var(--text2);margin:8px 0 16px">Equipo — ${currentProject?.name||'Proyecto'}</h3><div class="card" style="margin:0 0 16px 0;text-align:center"><div style="font-size:12px;color:var(--muted);margin-bottom:8px">Código de invitación de esta carpeta</div><div class="space-code" onclick="copyCode()">${projCode}</div><div style="font-size:11px;color:var(--dim);margin-top:6px">Toca para copiar · Compártelo para que se unan solo a esta carpeta</div>${isProjOwner?`<button class="btn btn-sm" style="margin-top:10px;background:rgba(231,76,60,0.12);color:var(--red);border:1px solid rgba(231,76,60,0.2);font-size:12px" onclick="regenerateProjectCode()">🔄 Generar nuevo código</button><div style="font-size:10px;color:var(--dim);margin-top:5px">El código anterior dejará de funcionar</div>`:''}</div><div class="label-xs" style="color:var(--muted);margin-bottom:10px">Miembros de esta carpeta (${projMembers.length})</div>${projMembers.map(m=>{const me=m.uid===user?.uid,ow=m.uid===currentProject?.ownerId;return`<div class="card" style="margin:0 0 8px 0;display:flex;justify-content:space-between;align-items:center"><div style="display:flex;align-items:center;gap:10px"><div style="width:34px;height:34px;border-radius:50%;background:${ow?'var(--blue)':'var(--purple)'}30;display:flex;align-items:center;justify-content:center;font-size:15px">${ow?'👑':'👤'}</div><div><div style="font-size:14px;font-weight:600;color:var(--text2)">${m.name}${me?' (tú)':''}</div><div style="font-size:11px;color:var(--muted)">${m.email}</div></div></div><div style="font-size:11px;color:${ow?'var(--blue)':'var(--muted)'}">${ow?'Admin':'Miembro'}</div></div>`}).join('')}</div>`
 }
 
-async function regenerateSpaceCode(){
-  if(!confirm('¿Generar un nuevo código para esta carpeta? El código actual dejará de funcionar.'))return;
+async function regenerateProjectCode(skipConfirm=false){
+  if(!skipConfirm&&!confirm('¿Generar un nuevo código para esta carpeta? El código actual dejará de funcionar.'))return;
   try{
     const oldCode=currentProject?.code;
     const newCode=genCode();
     const projRef=db.collection('spaces').doc(currentSpace.id).collection('projects').doc(currentProject.id);
-    await projRef.update({code:newCode});
-    // Actualizar índice global
+    await projRef.update({code:newCode,memberUids:firebase.firestore.FieldValue.arrayUnion(user.uid)});
     if(oldCode)await db.collection('projectCodes').doc(oldCode).delete().catch(()=>{});
     await db.collection('projectCodes').doc(newCode).set({spaceId:currentSpace.id,projectId:currentProject.id});
     currentProject={...currentProject,code:newCode};
-    showToast('🔄 Nuevo código de carpeta generado','var(--green)');
+    if(!skipConfirm)showToast('🔄 Nuevo código de carpeta generado','var(--green)');
     renderMainContent();
   }catch(e){showToast(e.message,'var(--red)')}
 }
