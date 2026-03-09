@@ -180,11 +180,13 @@ function genId(){return Date.now().toString(36)+Math.random().toString(36).slice
 function projCurrency(){return currentProject?.currency||'usd'}
 function fmtMoney(n){
   const d=userDisplayCurrency||projCurrency();const v=Number(n||0);const pais=getPais();
+  const isEurBase=projCurrency()==='eur'||spaceCountry==='EU';
+  if(isEurBase){if(d==='usd'&&tasaLocal)return`$${(v/tasaLocal).toFixed(2)}`;return`€${v.toFixed(2)}`;}
   if(d==='ves'&&tasaBCV)return`Bs. ${(v*tasaBCV).toFixed(2)}`;
   if(d==='ars'&&tasaARS)return`AR$${(v*tasaARS).toFixed(0)}`;
   if(d==='local'&&tasaLocal&&pais){const dec=pais.decimales??2;return`${pais.simbolo}${(v*tasaLocal).toFixed(dec)}`;}
   if(d==='eur'&&projCurrency()!=='eur'&&tasaBCV&&tasaEUR)return`€${(v*tasaBCV/tasaEUR).toFixed(2)}`;
-  return`${d==='eur'||projCurrency()==='eur'?'€':'$'}${v.toFixed(2)}`
+  return`${d==='eur'?'€':'$'}${v.toFixed(2)}`
 }
 
 // ═══ STATE ═══
@@ -446,7 +448,7 @@ async function removeLocalTasa(){
 }
 
 // ═══ MONEDA DE VISUALIZACIÓN ═══
-function loadDisplayCurrency(){userDisplayCurrency=localStorage.getItem('fina_disp_'+(currentProject?.id||''))||projCurrency()}
+function loadDisplayCurrency(){const saved=localStorage.getItem('fina_disp_'+(currentProject?.id||''));userDisplayCurrency=saved||(projCurrency()==='eur'||spaceCountry==='EU'?'eur':projCurrency())}
 function setDisplayCurrency(cur){
   if(cur==='ves'&&!tasaBCV)return showToast('Activa la tasa BCV primero');
   if(cur==='ars'&&!tasaARS)return showToast('Activa la tasa ARS primero');
@@ -466,7 +468,7 @@ function dispCurToggleHTML(){
   // Argentina: $USD | AR$ ARS
   if(pais.tipo==='ars'&&tasaARS)return`<div class="disp-cur-toggle"><button class="disp-cur-btn ${cur==='usd'?'active':''}" onclick="setDisplayCurrency('usd')">$ USD</button><button class="disp-cur-btn ${cur==='ars'?'active':''}" onclick="setDisplayCurrency('ars')">AR$ ARS</button></div>`;
   // Local currency: $USD | [symbol] [code]
-  if(pais.tipo==='local'&&tasaLocal)return`<div class="disp-cur-toggle"><button class="disp-cur-btn ${cur==='usd'?'active':''}" onclick="setDisplayCurrency('usd')">$ USD</button><button class="disp-cur-btn ${cur==='local'?'active':''}" onclick="setDisplayCurrency('local')">${pais.simbolo} ${pais.moneda}</button></div>`;
+  if(pais.tipo==='local'&&tasaLocal){const lc=spaceCountry==='EU'?'eur':'local';return`<div class="disp-cur-toggle"><button class="disp-cur-btn ${cur==='usd'?'active':''}" onclick="setDisplayCurrency('usd')">$ USD</button><button class="disp-cur-btn ${cur===lc?'active':''}" onclick="setDisplayCurrency('${lc}')">${pais.simbolo} ${pais.moneda}</button></div>`;}
   return'';
 }
 
