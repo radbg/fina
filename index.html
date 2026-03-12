@@ -185,6 +185,7 @@ function fmtMoney(n){
   if(d==='ves'&&tasaBCV)return`Bs. ${(v*tasaBCV).toFixed(2)}`;
   if(d==='ars'&&tasaARS)return`AR$${(v*tasaARS).toFixed(0)}`;
   if(d==='local'&&tasaLocal&&pais){const dec=pais.decimales??2;return`${pais.simbolo}${(v*tasaLocal).toFixed(dec)}`;}
+  if(d==='eur'&&spaceCountry==='EU'&&tasaLocal)return`€${(v*tasaLocal).toFixed(2)}`;
   if(d==='eur'&&projCurrency()!=='eur'&&tasaBCV&&tasaEUR)return`€${(v*tasaBCV/tasaEUR).toFixed(2)}`;
   return`${d==='eur'?'€':'$'}${v.toFixed(2)}`
 }
